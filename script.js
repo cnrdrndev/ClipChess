@@ -1,6 +1,3 @@
-// ClipChess Main Script
-
-// Piece image mapping (using Wikimedia Commons high quality chess piece SVG vectors)
 const pieceImages = {
     'wP': 'https://upload.wikimedia.org/wikipedia/commons/4/45/Chess_plt45.svg',
     'wN': 'https://upload.wikimedia.org/wikipedia/commons/7/70/Chess_nlt45.svg',
@@ -16,44 +13,54 @@ const pieceImages = {
     'bK': 'https://upload.wikimedia.org/wikipedia/commons/f/f0/Chess_kdt45.svg'
 };
 
-// Global State
+let currentUser = JSON.parse(localStorage.getItem('clipchess_user')) || { username: 'Guest', elo: 1500 };
 let game = new Chess();
 let selectedSquare = null;
 let possibleMoves = [];
-let boardOrientation = 'white'; // 'white' or 'black'
+let boardOrientation = 'white';
 let gameActive = false;
 let gameMode = 'computer';
-let aiDifficulty = 3;
+let aiDifficulty = 5;
 let whiteTime = 300;
 let blackTime = 300;
 let timerInterval = null;
 let currentTurnTimer = 'w';
+let viewingHistoryIndex = -1;
 
-// Sample community clips seed data
+let stockfishWorker = null;
+let currentEval = 0;
+
+let conversations = JSON.parse(localStorage.getItem('clipchess_conversations')) || [
+    { id: 1, peer: 'Stockfish Bot', messages: [{ sender: 'Stockfish Bot', text: 'Welcome to ClipChess! Ready for a game?' }] }
+];
+let activeChatId = null;
+
 let communityClips = [
     {
         id: 1,
         title: "Immortal Game Brilliant Finish",
         author: "Adolf Anderssen",
         pgn: "1. e4 e5 2. f4 exf4 3. Bc4 Qh4+ 4. Kf1 b5 5. Bxb5 Nf6 6. Nf3 Qh6 7. d3 Nh5 8. Nh4 Qg5 9. Nf5 c6 10. g4 Nf6 11. Rg1 cxb5 12. h4 Qg6 13. h5 Qg5 14. Qf3 Ng8 15. Bxf4 Qf6 16. Nc3 Bc5 17. Nd5 Qxb2 18. Bd6 Bxg1 19. e5 Qxa1+ 20. Ke2 Na6 21. Nxg7+ Kd8 22. Qf6+ Nxf6 23. Be7#"
-    },
-    {
-        id: 2,
-        title: "Fast Queen Trap in the Center",
-        author: "GrandmasterBlitz",
-        pgn: "1. e4 e6 2. d4 d5 3. Nc3 Nf6 4. Bg5 dxe4 5. Nxe4 Be7 6. Bxf6 Bxf6 7. Nf3 O-O 8. Qd2 b6 9. O-O-O Bb7 10. Qf4 Nd7 11. Bd3 Qe7"
     }
 ];
 
-// DOM Loaded
 document.addEventListener('DOMContentLoaded', () => {
+    initAccountUI();
     initTabs();
     initBoardUI();
+    initStockfishWorker();
     initEventListeners();
     renderClipsFeed();
+    renderConversations();
 });
 
-// Navigation Tabs
+function initAccountUI() {
+    document.getElementById('current-username').innerText = currentUser.username;
+    document.getElementById('current-elo').innerText = currentUser.elo;
+    document.getElementById('user-name-display').innerText = currentUser.username;
+    document.getElementById('user-rating-display').innerText = currentUser.elo;
+}
+
 function initTabs() {
     const navItems = document.querySelectorAll('.nav-item');
     navItems.forEach(item => {
@@ -69,7 +76,56 @@ function initTabs() {
     });
 }
 
-// Initialize Chessboard DOM grid
+function initStockfishWorker() {
+    try {
+        stockfishWorker = new Worker("https://cdnjs.cloudflare.com/ajax/libs/stockfish.js/10.0.2/stockfish.js");
+        stockfishWorker.onmessage = function(event) {
+            const message = event.data;
+            if (typeof message === 'string') {
+                if (message.startsWith('info') && message.includes('score')) {
+                    parseStockfishInfo(message);
+                } else if (message.startsWith('bestmove') && gameActive && gameMode === 'computer' && game.turn() === 'b') {
+                    const bestMoveStr = message.split(' ')[1];
+                    if (bestMoveStr) {
+                        const from = bestMoveStr.substring(0, 2);
+                        const to = bestMoveStr.substring(2, 4);
+                        const promotion = bestMoveStr.length > 4 ? bestMoveStr[4] : 'q';
+                        game.move({ from, to, promotion });
+                        handlePostMove();
+                    }
+                }
+            }
+        };
+        stockfishWorker.postMessage('uci');
+    } catch(e) {
+        console.log("Stockfish worker fallback mode enabled.");
+    }
+}
+
+function parseStockfishInfo(infoStr) {
+    if (infoStr.includes('cp ')) {
+        const match = infoStr.match(/cp\s+(-?\d+)/);
+        if (match) {
+            currentEval = parseInt(match[1]) / 100;
+            updateEvalBar();
+        }
+    } else if (infoStr.includes('mate ')) {
+        const match = infoStr.match(/mate\s+(-?\d+)/);
+        if (match) {
+            const mateIn = parseInt(match[1]);
+            currentEval = mateIn > 0 ? 10 + (10 / mateIn) : -10 - (10 / Math.abs(mateIn));
+            updateEvalBar();
+        }
+    }
+}
+
+function requestStockfishEvaluation() {
+    if (stockfishWorker) {
+        stockfishWorker.postMessage('position fen ' + game.fen());
+        stockfishWorker.postMessage('go depth 10');
+    }
+}
+
 function initBoardUI() {
     const boardEl = document.getElementById('chessboard');
     boardEl.innerHTML = '';
@@ -96,23 +152,28 @@ function initBoardUI() {
     updateBoardPieces();
 }
 
-// Render Pieces and highlights
 function updateBoardPieces() {
+    let displayGame = game;
+    if (viewingHistoryIndex >= 0) {
+        displayGame = new Chess();
+        const history = game.history({ verbose: true });
+        for (let i = 0; i <= viewingHistoryIndex; i++) {
+            displayGame.move(history[i]);
+        }
+    }
+
     const squares = document.querySelectorAll('.square');
     squares.forEach(sq => {
         const squareId = sq.getAttribute('data-square');
         sq.innerHTML = '';
         sq.classList.remove('highlight', 'selected');
 
-        // Highlight selected square and possible moves
-        if (selectedSquare === squareId) {
-            sq.classList.add('selected');
-        }
-        if (possibleMoves.includes(squareId)) {
-            sq.classList.add('highlight');
+        if (viewingHistoryIndex === -1) {
+            if (selectedSquare === squareId) sq.classList.add('selected');
+            if (possibleMoves.includes(squareId)) sq.classList.add('highlight');
         }
 
-        const piece = game.get(squareId);
+        const piece = displayGame.get(squareId);
         if (piece) {
             const pieceKey = piece.color + piece.type.toUpperCase();
             const pieceDiv = document.createElement('div');
@@ -125,11 +186,8 @@ function updateBoardPieces() {
     updateEvalBar();
 }
 
-// Square Click Handling
 function onSquareClick(squareId) {
-    if (!gameActive) return;
-
-    // If computer mode and it's black's turn, ignore user clicks
+    if (!gameActive || viewingHistoryIndex !== -1) return;
     if (gameMode === 'computer' && game.turn() === 'b') return;
 
     if (selectedSquare === null) {
@@ -141,20 +199,13 @@ function onSquareClick(squareId) {
         }
     } else {
         if (possibleMoves.includes(squareId)) {
-            // Make move
-            const move = game.move({
-                from: selectedSquare,
-                to: squareId,
-                promotion: 'q' // auto promote to queen for simplicity
-            });
-
+            const move = game.move({ from: selectedSquare, to: squareId, promotion: 'q' });
             if (move) {
                 selectedSquare = null;
                 possibleMoves = [];
                 handlePostMove();
             }
         } else {
-            // Reselect or deselect
             const piece = game.get(squareId);
             if (piece && piece.color === game.turn()) {
                 selectedSquare = squareId;
@@ -168,55 +219,37 @@ function onSquareClick(squareId) {
     }
 }
 
-// Handle actions after every valid move
 function handlePostMove() {
+    viewingHistoryIndex = -1;
     updateBoardPieces();
     updateMoveHistoryUI();
     checkGameOver();
 
     if (!gameActive) return;
 
-    // Switch clock turn
     currentTurnTimer = game.turn();
     updateClockDisplay();
+    requestStockfishEvaluation();
 
-    // If AI turn
     if (gameActive && gameMode === 'computer' && game.turn() === 'b') {
-        setTimeout(makeAIMove, 300);
+        if (stockfishWorker) {
+            stockfishWorker.postMessage('position fen ' + game.fen());
+            stockfishWorker.postMessage(`go movetime ${aiDifficulty * 200}`);
+        } else {
+            setTimeout(makeFallbackAIMove, 400);
+        }
     }
 }
 
-// Simple heuristic AI for Stockfish simulation
-function makeAIMove() {
+function makeFallbackAIMove() {
     if (!gameActive) return;
     const moves = game.moves({ verbose: true });
     if (moves.length === 0) return;
-
-    let chosenMove = null;
-
-    if (aiDifficulty === 1) {
-        // Random moves
-        chosenMove = moves[Math.floor(Math.random() * moves.length)];
-    } else {
-        // Basic capture preference & center control heuristic
-        let scoredMoves = moves.map(m => {
-            let score = 0;
-            if (m.captured) {
-                const values = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 0 };
-                score += values[m.captured] * 10;
-            }
-            if (['d4', 'd5', 'e4', 'e5'].includes(m.to)) score += 2;
-            return { move: m, score };
-        });
-        scoredMoves.sort((a, b) => b.score - a.score);
-        chosenMove = scoredMoves[0].move;
-    }
-
-    game.move(chosenMove);
+    const randomMove = moves[Math.floor(Math.random() * moves.length)];
+    game.move(randomMove);
     handlePostMove();
 }
 
-// Check game over conditions
 function checkGameOver() {
     const statusEl = document.getElementById('game-status');
     if (game.in_checkmate()) {
@@ -230,8 +263,7 @@ function checkGameOver() {
         const inCheckColor = game.turn() === 'w' ? 'White' : 'Black';
         statusEl.innerHTML = `<i class="fa-solid fa-triangle-exclamation"></i> ${inCheckColor} is in Check!`;
     } else {
-        const turnColor = game.turn() === 'w' ? 'White to move' : 'Black to move';
-        statusEl.innerHTML = turnColor;
+        statusEl.innerHTML = game.turn() === 'w' ? 'White to move' : 'Black to move';
     }
 }
 
@@ -241,26 +273,18 @@ function endGame() {
     document.querySelectorAll('.clock').forEach(c => c.classList.remove('active-clock'));
 }
 
-// Timers
 function startTimers() {
     clearInterval(timerInterval);
     if (whiteTime <= 0 && blackTime <= 0) return;
 
     timerInterval = setInterval(() => {
         if (!gameActive) return;
-
         if (currentTurnTimer === 'w') {
             if (whiteTime > 0) whiteTime--;
-            if (whiteTime <= 0) {
-                document.getElementById('game-status').innerHTML = "Black wins on time!";
-                endGame();
-            }
+            if (whiteTime <= 0) { document.getElementById('game-status').innerHTML = "Black wins on time!"; endGame(); }
         } else {
             if (blackTime > 0) blackTime--;
-            if (blackTime <= 0) {
-                document.getElementById('game-status').innerHTML = "White wins on time!";
-                endGame();
-            }
+            if (blackTime <= 0) { document.getElementById('game-status').innerHTML = "White wins on time!"; endGame(); }
         }
         updateClockDisplay();
     }, 1000);
@@ -272,32 +296,14 @@ function updateClockDisplay() {
         const s = secs % 60;
         return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
     };
-
     document.getElementById('white-clock').innerText = formatTime(whiteTime);
     document.getElementById('black-clock').innerText = formatTime(blackTime);
-
     document.getElementById('white-clock').classList.toggle('active-clock', currentTurnTimer === 'w' && gameActive);
     document.getElementById('black-clock').classList.toggle('active-clock', currentTurnTimer === 'b' && gameActive);
 }
 
-// Evaluation Bar estimation
 function updateEvalBar() {
-    let score = 0;
-    const board = game.board();
-    const pieceVals = { p: 1, n: 3, b: 3, r: 5, q: 9, k: 0 };
-    
-    board.forEach(row => {
-        row.forEach(piece => {
-            if (piece) {
-                const val = pieceVals[piece.type];
-                if (piece.color === 'w') score += val;
-                else score -= val;
-            }
-        });
-    });
-
-    // Map score (-10 to +10) to percentage (0 to 100)
-    let percentage = 50 + (score * 5);
+    let percentage = 50 + (currentEval * 5);
     percentage = Math.max(5, Math.min(95, percentage));
     
     if (boardOrientation === 'black') {
@@ -307,7 +313,6 @@ function updateEvalBar() {
     document.getElementById('eval-bar-fill').style.height = `${percentage}%`;
 }
 
-// Move History UI
 function updateMoveHistoryUI() {
     const historyBody = document.getElementById('move-history-body');
     historyBody.innerHTML = '';
@@ -315,11 +320,32 @@ function updateMoveHistoryUI() {
 
     for (let i = 0; i < history.length; i += 2) {
         const moveNum = Math.floor(i / 2) + 1;
-        const whiteMove = history[i] ? history[i].san : '';
-        const blackMove = history[i + 1] ? history[i + 1].san : '';
+        const whitePly = i;
+        const blackPly = i + 1;
+
+        const whiteMove = history[whitePly] ? history[whitePly].san : '';
+        const blackMove = history[blackPly] ? history[blackPly].san : '';
 
         const tr = document.createElement('tr');
-        tr.innerHTML = `<td>${moveNum}.</td><td>${whiteMove}</td><td>${blackMove}</td>`;
+        
+        const tdNum = document.createElement('td');
+        tdNum.innerText = `${moveNum}.`;
+
+        const tdWhite = document.createElement('td');
+        tdWhite.innerText = whiteMove;
+        if (viewingHistoryIndex === whitePly) tdWhite.classList.add('active-history-move');
+        tdWhite.addEventListener('click', () => jumpToHistory(whitePly));
+
+        const tdBlack = document.createElement('td');
+        tdBlack.innerText = blackMove;
+        if (blackMove) {
+            if (viewingHistoryIndex === blackPly) tdBlack.classList.add('active-history-move');
+            tdBlack.addEventListener('click', () => jumpToHistory(blackPly));
+        }
+
+        tr.appendChild(tdNum);
+        tr.appendChild(tdWhite);
+        tr.appendChild(tdBlack);
         historyBody.appendChild(tr);
     }
 
@@ -327,7 +353,13 @@ function updateMoveHistoryUI() {
     container.scrollTop = container.scrollHeight;
 }
 
-// Event Listeners for UI Controls
+function jumpToHistory(plyIndex) {
+    viewingHistoryIndex = plyIndex;
+    updateBoardPieces();
+    updateMoveHistoryUI();
+    document.getElementById('game-status').innerHTML = `<i class="fa-solid fa-clock-rotate-left"></i> Inspecting move history (Ply ${plyIndex + 1})`;
+}
+
 function initEventListeners() {
     const modeSelect = document.getElementById('game-mode');
     const diffGroup = document.getElementById('difficulty-group');
@@ -347,14 +379,16 @@ function initEventListeners() {
         gameActive = true;
         selectedSquare = null;
         possibleMoves = [];
+        viewingHistoryIndex = -1;
         currentTurnTimer = 'w';
+        currentEval = 0;
 
         if (gameMode === 'computer') {
-            document.getElementById('opponent-name').innerText = `Stockfish (Level ${aiDifficulty})`;
-            document.getElementById('opponent-rating').innerText = 1200 + (aiDifficulty * 150);
+            document.getElementById('opponent-name').innerText = `Stockfish Bot (Lvl ${aiDifficulty})`;
+            document.getElementById('opponent-rating').innerText = 1000 + (aiDifficulty * 150);
         } else {
-            document.getElementById('opponent-name').innerText = `Player 2`;
-            document.getElementById('opponent-rating').innerText = '1500';
+            document.getElementById('opponent-name').innerText = `Friend`;
+            document.getElementById('opponent-rating').innerText = currentUser.elo;
         }
 
         document.getElementById('setup-card').classList.add('hidden');
@@ -364,6 +398,7 @@ function initEventListeners() {
         updateMoveHistoryUI();
         updateClockDisplay();
         if (timeSecs > 0) startTimers();
+        requestStockfishEvaluation();
     });
 
     document.getElementById('resign-btn').addEventListener('click', () => {
@@ -378,49 +413,132 @@ function initEventListeners() {
         initBoardUI();
     });
 
-    // Share Modal
-    const modal = document.getElementById('share-modal');
-    const shareBtn = document.getElementById('share-clip-btn');
-    const shareCurrentBtn = document.getElementById('share-current-btn');
-    const closeModal = document.querySelector('.close-modal');
-
-    const openShareModal = (pgnString = '') => {
-        document.getElementById('clip-pgn').value = pgnString || game.pgn();
-        modal.style.display = 'flex';
-    };
-
-    shareBtn.addEventListener('click', () => openShareModal());
-    shareCurrentBtn.addEventListener('click', () => openShareModal());
-    closeModal.addEventListener('click', () => modal.style.display = 'none');
-    window.addEventListener('click', (e) => {
-        if (e.target === modal) modal.style.display = 'none';
+    const accountModal = document.getElementById('account-modal');
+    document.getElementById('user-profile-trigger').addEventListener('click', () => {
+        document.getElementById('modal-username').value = currentUser.username;
+        document.getElementById('modal-elo').value = currentUser.elo;
+        accountModal.style.display = 'flex';
+    });
+    document.getElementById('close-account-modal').addEventListener('click', () => accountModal.style.display = 'none');
+    document.getElementById('save-account-btn').addEventListener('click', () => {
+        currentUser.username = document.getElementById('modal-username').value.trim() || 'Player';
+        currentUser.elo = parseInt(document.getElementById('modal-elo').value) || 1500;
+        localStorage.setItem('clipchess_user', JSON.stringify(currentUser));
+        initAccountUI();
+        accountModal.style.display = 'none';
     });
 
+    const shareModal = document.getElementById('share-modal');
+    document.getElementById('share-clip-btn').addEventListener('click', () => {
+        document.getElementById('clip-pgn').value = game.pgn();
+        shareModal.style.display = 'flex';
+    });
+    document.getElementById('share-current-btn').addEventListener('click', () => {
+        document.getElementById('clip-pgn').value = game.pgn();
+        shareModal.style.display = 'flex';
+    });
+    document.getElementById('close-share-modal').addEventListener('click', () => shareModal.style.display = 'none');
+
     document.getElementById('publish-clip-btn').addEventListener('click', () => {
-        const title = document.getElementById('clip-title').value.trim() || "Epic Chess Battle";
-        const author = document.getElementById('clip-author').value.trim() || "Anonymous";
+        const title = document.getElementById('clip-title').value.trim() || "Epic Match";
         const pgn = document.getElementById('clip-pgn').value.trim() || game.pgn();
-
-        communityClips.unshift({
-            id: Date.now(),
-            title,
-            author,
-            pgn
-        });
-
-        modal.style.display = 'none';
+        communityClips.unshift({ id: Date.now(), title, author: currentUser.username, pgn });
+        shareModal.style.display = 'none';
         renderClipsFeed();
-        
-        // Switch to clips tab to show published clip
         document.querySelector('[data-tab="clips-tab"]').click();
+    });
+
+    document.getElementById('new-message-btn').addEventListener('click', () => {
+        const peerName = prompt("Enter username to message:");
+        if (peerName) {
+            let existing = conversations.find(c => c.peer === peerName);
+            if (!existing) {
+                existing = { id: Date.now(), peer: peerName, messages: [] };
+                conversations.push(existing);
+                saveConversations();
+            }
+            renderConversations();
+            openChat(existing.id);
+        }
     });
 }
 
-// Render Community Clips Grid
+function renderConversations() {
+    const listEl = document.getElementById('conversations-list');
+    listEl.innerHTML = '';
+    conversations.forEach(conv => {
+        const div = document.createElement('div');
+        div.classList.add('conv-item');
+        if (activeChatId === conv.id) div.classList.add('active');
+        div.innerHTML = `<strong>${escapeHTML(conv.peer)}</strong><br><small style="color:var(--text-main);">${conv.messages.length ? escapeHTML(conv.messages[conv.messages.length - 1].text) : 'No messages yet'}</small>`;
+        div.addEventListener('click', () => openChat(conv.id));
+        listEl.appendChild(div);
+    });
+}
+
+function openChat(convId) {
+    activeChatId = convId;
+    renderConversations();
+    const conv = conversations.find(c => c.id === convId);
+    if (!conv) return;
+
+    const chatPane = document.getElementById('chat-pane');
+    chatPane.innerHTML = `
+        <h3 style="border-bottom:1px solid var(--border-color); padding-bottom:0.5rem; margin-bottom:1rem;"><i class="fa-solid fa-user"></i> ${escapeHTML(conv.peer)}</h3>
+        <div class="chat-messages" id="chat-messages"></div>
+        <div class="chat-input-area">
+            <input type="text" id="chat-input" placeholder="Type a message...">
+            <button id="send-msg-btn" class="btn btn-success"><i class="fa-solid fa-paper-plane"></i></button>
+        </div>
+    `;
+
+    const msgsEl = document.getElementById('chat-messages');
+    conv.messages.forEach(m => {
+        const bubble = document.createElement('div');
+        bubble.classList.add('chat-bubble');
+        bubble.classList.add(m.sender === currentUser.username ? 'outgoing' : 'incoming');
+        bubble.innerText = m.text;
+        msgsEl.appendChild(bubble);
+    });
+    msgsEl.scrollTop = msgsEl.scrollHeight;
+
+    document.getElementById('send-msg-btn').addEventListener('click', sendChatMessage);
+    document.getElementById('chat-input').addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') sendChatMessage();
+    });
+}
+
+function sendChatMessage() {
+    const input = document.getElementById('chat-input');
+    const text = input.value.trim();
+    if (!text) return;
+
+    const conv = conversations.find(c => c.id === activeChatId);
+    if (!conv) return;
+
+    conv.messages.push({ sender: currentUser.username, text });
+    input.value = '';
+    saveConversations();
+    renderConversations();
+    openChat(conv.id);
+
+    if (conv.peer === 'Stockfish Bot') {
+        setTimeout(() => {
+            conv.messages.push({ sender: 'Stockfish Bot', text: `I evaluated your message at +0.00. Good point!` });
+            saveConversations();
+            renderConversations();
+            if (activeChatId === conv.id) openChat(conv.id);
+        }, 1000);
+    }
+}
+
+function saveConversations() {
+    localStorage.setItem('clipchess_conversations', JSON.stringify(conversations));
+}
+
 function renderClipsFeed() {
     const grid = document.getElementById('clips-grid');
     grid.innerHTML = '';
-
     communityClips.forEach((clip, idx) => {
         const card = document.createElement('div');
         card.classList.add('clip-card');
@@ -429,9 +547,7 @@ function renderClipsFeed() {
                 <div class="clip-title">${escapeHTML(clip.title)}</div>
                 <div class="clip-author">by ${escapeHTML(clip.author)}</div>
             </div>
-            <div class="clip-preview-board" id="clip-preview-${idx}">
-                <!-- Mini board representation -->
-            </div>
+            <div class="clip-preview-board" id="clip-preview-${idx}"></div>
             <div class="clip-card-footer">
                 <button class="btn btn-primary btn-sm" onclick="loadClipToPlay(${idx})"><i class="fa-solid fa-play"></i> Analyze / Play</button>
             </div>
@@ -445,13 +561,8 @@ function renderMiniBoard(pgn, containerId) {
     const container = document.getElementById(containerId);
     if (!container) return;
     container.innerHTML = '';
-
     const tempGame = new Chess();
-    try {
-        tempGame.load_pgn(pgn);
-    } catch(e) {
-        // fallback
-    }
+    try { tempGame.load_pgn(pgn); } catch(e) {}
 
     const miniBoard = document.createElement('div');
     miniBoard.style.display = 'grid';
@@ -487,7 +598,6 @@ function renderMiniBoard(pgn, containerId) {
             miniBoard.appendChild(sq);
         });
     });
-
     container.appendChild(miniBoard);
 }
 
@@ -497,19 +607,17 @@ function loadClipToPlay(index) {
     gameActive = true;
     selectedSquare = null;
     possibleMoves = [];
+    viewingHistoryIndex = -1;
 
     document.getElementById('setup-card').classList.add('hidden');
     document.getElementById('game-card').classList.remove('hidden');
     document.getElementById('game-status').innerText = `Viewing clip: ${clip.title}`;
 
-    // Switch to play tab
     document.querySelector('[data-tab="play-tab"]').click();
     initBoardUI();
     updateMoveHistoryUI();
 }
 
 function escapeHTML(str) {
-    return str.replace(/[&<>'"]/g, 
-        tag => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[tag] || tag)
-    );
+    return str.replace(/[&<>'"]/g, tag => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[tag] || tag));
 }

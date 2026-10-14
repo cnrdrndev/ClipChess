@@ -5,7 +5,6 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>ClipChess — Play & Share Chess Clips</title>
     <link rel="stylesheet" href="style.css">
-    <!-- FontAwesome for icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 </head>
 <body>
@@ -19,13 +18,14 @@
             <nav class="nav-links">
                 <a href="#" class="nav-item active" data-tab="play-tab"><i class="fa-solid fa-play"></i> Play</a>
                 <a href="#" class="nav-item" data-tab="clips-tab"><i class="fa-solid fa-film"></i> Community Clips</a>
+                <a href="#" class="nav-item" data-tab="messages-tab"><i class="fa-solid fa-comments"></i> Messages <span id="msg-badge" class="badge hidden">0</span></a>
             </nav>
         </div>
         <div class="nav-right">
             <button id="share-clip-btn" class="btn btn-primary"><i class="fa-solid fa-share-nodes"></i> Share Game Clip</button>
-            <div class="user-profile">
+            <div class="user-profile" id="user-profile-trigger" style="cursor: pointer;">
                 <i class="fa-solid fa-user-circle"></i>
-                <span>Guest</span>
+                <span id="current-username">Guest</span> (<span id="current-elo">1500</span>)
             </div>
         </div>
     </header>
@@ -36,18 +36,15 @@
         <!-- PLAY TAB -->
         <section id="play-tab" class="tab-content active">
             <div class="play-layout">
-                <!-- Left / Board Area -->
                 <div class="board-container-wrapper">
-                    <!-- Top Player Info (Black or Opponent) -->
                     <div class="player-info opponent">
                         <div class="player-details">
-                            <span class="player-name" id="opponent-name">Stockfish (Level 3)</span>
-                            <span class="player-rating" id="opponent-rating">1500</span>
+                            <span class="player-name" id="opponent-name">Stockfish (Level 5)</span>
+                            <span class="player-rating" id="opponent-rating">1750</span>
                         </div>
                         <div class="clock" id="black-clock">05:00</div>
                     </div>
 
-                    <!-- Evaluation Bar + Chessboard -->
                     <div class="board-with-eval">
                         <div class="eval-bar-container" title="Evaluation Bar">
                             <div id="eval-bar-fill" class="eval-bar-fill" style="height: 50%;"></div>
@@ -55,35 +52,32 @@
                         <div id="chessboard" class="chessboard"></div>
                     </div>
 
-                    <!-- Bottom Player Info (White or User) -->
                     <div class="player-info user">
                         <div class="player-details">
-                            <span class="player-name" id="user-name">You</span>
-                            <span class="player-rating" id="user-rating">1500</span>
+                            <span class="player-name" id="user-name-display">You</span>
+                            <span class="player-rating" id="user-rating-display">1500</span>
                         </div>
                         <div class="clock" id="white-clock">05:00</div>
                     </div>
                 </div>
 
-                <!-- Right / Control Panel -->
                 <div class="control-panel">
-                    <!-- Game Setup Card -->
                     <div class="panel-card setup-card" id="setup-card">
                         <h3><i class="fa-solid fa-gamepad"></i> New Game</h3>
                         <div class="form-group">
                             <label>Game Mode</label>
                             <select id="game-mode">
-                                <option value="computer">Play vs Computer</option>
+                                <option value="computer">Play vs Stockfish Bot</option>
                                 <option value="local">Play vs Friend (Local)</option>
                             </select>
                         </div>
                         <div class="form-group" id="difficulty-group">
-                            <label>Computer Difficulty</label>
+                            <label>Stockfish Engine Level</label>
                             <select id="ai-difficulty">
-                                <option value="1">Level 1 (Beginner)</option>
-                                <option value="2">Level 2 (Casual)</option>
-                                <option value="3" selected>Level 3 (Intermediate)</option>
-                                <option value="4">Level 4 (Advanced)</option>
+                                <option value="1">Level 1 (Easy)</option>
+                                <option value="3">Level 3 (Medium)</option>
+                                <option value="5" selected>Level 5 (Advanced)</option>
+                                <option value="8">Level 8 (Master)</option>
                             </select>
                         </div>
                         <div class="form-group">
@@ -98,11 +92,9 @@
                         <button id="start-game-btn" class="btn btn-success btn-full"><i class="fa-solid fa-play"></i> Start Game</button>
                     </div>
 
-                    <!-- Active Game Controls & History Card -->
                     <div class="panel-card game-card hidden" id="game-card">
                         <div class="game-status-banner" id="game-status">White to move</div>
                         
-                        <!-- Move History Box -->
                         <div class="move-history-container">
                             <table class="move-table">
                                 <thead>
@@ -112,17 +104,14 @@
                                         <th>Black</th>
                                     </tr>
                                 </thead>
-                                <tbody id="move-history-body">
-                                    <!-- Dynamic move list -->
-                                </tbody>
+                                <tbody id="move-history-body"></tbody>
                             </table>
                         </div>
 
-                        <!-- Game Action Buttons -->
                         <div class="game-action-buttons">
                             <button id="resign-btn" class="btn btn-danger" title="Resign"><i class="fa-solid fa-flag"></i> Resign</button>
                             <button id="flip-btn" class="btn btn-secondary" title="Flip Board"><i class="fa-solid fa-rotate"></i> Flip</button>
-                            <button id="share-current-btn" class="btn btn-primary" title="Share Clip"><i class="fa-solid fa-share-nodes"></i> Share Clip</button>
+                            <button id="share-current-btn" class="btn btn-primary" title="Share Clip"><i class="fa-solid fa-share-nodes"></i> Share</button>
                         </div>
                     </div>
                 </div>
@@ -135,35 +124,59 @@
                 <h2><i class="fa-solid fa-film"></i> Community Chess Clips</h2>
                 <p>Browse brilliant tactics, checkmates, and share your own PGN games!</p>
             </div>
-            <div class="clips-grid" id="clips-grid">
-                <!-- Dynamically populated clips -->
+            <div class="clips-grid" id="clips-grid"></div>
+        </section>
+
+        <!-- MESSAGES TAB -->
+        <section id="messages-tab" class="tab-content">
+            <div class="messages-layout">
+                <div class="conversations-sidebar">
+                    <h3><i class="fa-solid fa-inbox"></i> Conversations</h3>
+                    <div id="conversations-list"></div>
+                    <button id="new-message-btn" class="btn btn-primary btn-full" style="margin-top: 1rem;"><i class="fa-solid fa-plus"></i> New Message</button>
+                </div>
+                <div class="chat-pane" id="chat-pane">
+                    <div class="no-chat-selected">Select a conversation or start a new message.</div>
+                </div>
             </div>
         </section>
     </main>
 
-    <!-- Share Clip Modal -->
-    <div id="share-modal" class="modal">
+    <!-- Account Modal -->
+    <div id="account-modal" class="modal">
         <div class="modal-content">
-            <span class="close-modal">&times;</span>
-            <h2><i class="fa-solid fa-share-nodes"></i> Share Game Clip</h2>
-            <p>Publish your game to the ClipChess community feed.</p>
+            <span class="close-modal" id="close-account-modal">&times;</span>
+            <h2><i class="fa-solid fa-user-gear"></i> User Account & ELO</h2>
+            <p>Manage your ClipChess account credentials.</p>
             <div class="form-group">
-                <label>Clip Title</label>
-                <input type="text" id="clip-title" placeholder="e.g. Brilliant Queen Sacrifice in 14 moves!">
+                <label>Username</label>
+                <input type="text" id="modal-username" placeholder="Enter username">
             </div>
             <div class="form-group">
-                <label>Author / Username</label>
-                <input type="text" id="clip-author" placeholder="Your chess username">
+                <label>Current ELO Rating</label>
+                <input type="number" id="modal-elo" value="1500">
             </div>
-            <div class="form-group">
-                <label>PGN Data</label>
-                <textarea id="clip-pgn" rows="4" placeholder="Paste PGN or use current game..."></textarea>
-            </div>
-            <button id="publish-clip-btn" class="btn btn-success btn-full"><i class="fa-solid 	fa-cloud-arrow-up"></i> Publish Clip</button>
+            <button id="save-account-btn" class="btn btn-success btn-full"><i class="fa-solid fa-floppy-disk"></i> Save Profile</button>
         </div>
     </div>
 
-    <!-- Load Chess.js for game logic and validation -->
+    <!-- Share Clip Modal -->
+    <div id="share-modal" class="modal">
+        <div class="modal-content">
+            <span class="close-modal" id="close-share-modal">&times;</span>
+            <h2><i class="fa-solid fa-share-nodes"></i> Share Game Clip</h2>
+            <div class="form-group">
+                <label>Clip Title</label>
+                <input type="text" id="clip-title" placeholder="Brilliant tactic!">
+            </div>
+            <div class="form-group">
+                <label>PGN Data</label>
+                <textarea id="clip-pgn" rows="4"></textarea>
+            </div>
+            <button id="publish-clip-btn" class="btn btn-success btn-full"><i class="fa-solid fa-cloud-arrow-up"></i> Publish Clip</button>
+        </div>
+    </div>
+
     <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
     <script src="script.js"></script>
 </body>
